@@ -15,6 +15,7 @@ import requests
 USER_AGENT = "FlyRankInternship-A9/1.0 (+https://github.com/azizulabedinazmi/FlyRank_A9-Scraper)"
 TIMEOUT_S = 10          # give up on a request after this long; never wait forever
 MIN_DELAY_S = 0.75      # at least this long between two real requests (requirement: >= 0.5 s)
+RETRY_WAIT_S = 2.0      # pause before the single retry of a timeout / 5xx
 
 
 @dataclass
@@ -48,7 +49,7 @@ class Fetcher:
         self.session = requests.Session()
         self.session.headers["User-Agent"] = USER_AGENT
         self._last_request = 0.0
-        self.stats = {"network_requests": 0, "cache_hits": 0}
+        self.stats = {"network_requests": 0, "pages_fetched": 0, "cache_hits": 0, "retries": 0}
 
     def _paths(self, url: str) -> tuple[Path, Path]:
         html = self.cache_dir / cache_name(url)
@@ -60,6 +61,30 @@ class Fetcher:
             time.sleep(wait)
         self._last_request = time.monotonic()
 
+    def _request_with_one_retry(self, url: str) -> requests.Response:
+        """A timeout or a 5xx may be temporary: wait a moment and try once more. A 4xx is an answer, not an
+        accident: 404 won't create the page and 403 means "no", so asking again would only make us a pest."""
+        for attempt in (1, 2):
+            self._wait_politely()
+            self.stats["network_requests"] += 1
+            try:
+                r = self.session.get(url, timeout=self.timeout)
+            except requests.Timeout:
+                err = FetchError(url, "timeout")
+            except requests.RequestException as e:
+                err = FetchError(url, f"network error: {e.__class__.__name__}")
+            else:
+                if r.status_code == 200:  # only 200 is "here is your page"
+                    self.stats["pages_fetched"] += 1
+                    return r
+                err = FetchError(url, f"HTTP {r.status_code}", r.status_code)
+                if r.status_code < 500:
+                    raise err  # 4xx: never retried
+            if attempt == 1:
+                self.stats["retries"] += 1
+                time.sleep(RETRY_WAIT_S)
+        raise err
+
     def get(self, url: str) -> Page:
         html_path, meta_path = self._paths(url)
         if not self.refresh and html_path.exists() and meta_path.exists():
@@ -68,16 +93,7 @@ class Fetcher:
             html = html_path.read_text(encoding="utf-8")
             return Page(url, html, meta["status"], meta["fetched_at"], True, len(html.encode()))
 
-        self._wait_politely()
-        self.stats["network_requests"] += 1
-        try:
-            r = self.session.get(url, timeout=self.timeout)
-        except requests.Timeout:
-            raise FetchError(url, "timeout")
-        except requests.RequestException as e:
-            raise FetchError(url, f"network error: {e.__class__.__name__}")
-        if r.status_code != 200:  # only 200 is "here is your page"; anything else is a failed fetch, not HTML to parse
-            raise FetchError(url, f"HTTP {r.status_code}", r.status_code)
+        r = self._request_with_one_retry(url)
 
         html = r.content.decode("utf-8")  # the site is UTF-8; don't let a charset guess turn £ into Â£
         fetched_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

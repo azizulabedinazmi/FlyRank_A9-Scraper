@@ -1,0 +1,22 @@
+{
+  "started_at": "2026-11-25T17:18:28Z",
+  "finished_at": "2026-11-25T17:18:29Z",
+  "duration_s": 0.41,
+  "catalogue_pages": 3,
+  "book_urls_discovered": 60,
+  "book_urls_unique": 60,
+  "detail_pages_parsed": 60,
+  "pages_fetched": 0,
+  "network_requests": 0,
+  "retries": 0,
+  "cache_hits": 63,
+  "valid_records": 60,
+  "invalid_records": 0,
+  "failed_pages": 0,
+  "failures": [],
+  "politeness": {
+    "user_agent": "FlyRankInternship-A9/1.0 (+https://github.com/azizulabedinazmi/FlyRank_A9-Scraper)",
+    "min_delay_s": 0.75,
+    "timeout_s": 10
+  }
+}
