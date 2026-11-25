@@ -2,12 +2,12 @@
 
 Run from the repo root:  python src/main.py
 """
-import json
 import sys
 from pathlib import Path
 
 from fetch import Fetcher, FetchError
 from parse import parse_book, parse_catalogue
+from store import store, validate
 
 ROOT = Path(__file__).resolve().parent.parent
 START_URL = "https://books.toscrape.com/catalogue/page-1.html"
@@ -59,8 +59,11 @@ def main() -> int:
         page = fetcher.get(url)
         log("CACHE HIT" if page.from_cache else "FETCH", page.url, status=page.status, bytes=page.size)
         raw.append(parse_book(page.html, url, source_page, page.fetched_at))
-    print(json.dumps(raw[0], indent=2, ensure_ascii=False))
     print(f"detail_pages={len(raw)}, without_description={sum(r['description'] is None for r in raw)}")
+
+    good, bad = validate(raw)
+    store(ROOT / "output", good, bad)
+    print(f"valid_records={len(good)}, invalid_records={len(bad)} -> output/books.json, output/errors.json")
     print(f"network_requests={fetcher.stats['network_requests']}, cache_hits={fetcher.stats['cache_hits']}")
     return 0
 
