@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Raw HTML cache: re-created by the first run, never published (hundreds of copies of someone else's pages)
+cache/
