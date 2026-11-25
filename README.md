@@ -35,6 +35,7 @@
     <li><a href="#tests">Tests</a></li>
     <li><a href="#limits">Honest limitations</a></li>
     <li><a href="#ethics">Ethics</a></li>
+    <li><a href="#ai-vs-me">AI vs me (bonus)</a></li>
     <li><a href="#structure">Repository structure</a></li>
     <li><a href="#about">About</a></li>
   </ol>
@@ -312,6 +313,117 @@ shop would need its terms read first, and quite possibly a different answer.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
+## 🤖 AI vs me (bonus) <a name="ai-vs-me"></a>
+
+After building the pipeline by hand, I gave the same job to an AI (Claude, in a fresh session that saw only the
+prompt, wasn't allowed to run anything, and had never seen this repo). Its code is kept apart in
+[`ai-version/`](ai-version/); my `src/` wasn't touched.
+
+- [`PROMPT-v1.md`](ai-version/PROMPT-v1.md) / [`v1/`](ai-version/v1/) and [`PROMPT-v2.md`](ai-version/PROMPT-v2.md) / [`v2/`](ai-version/v2/)
+- **The test:** [`ai-version/checkpoint.py`](ai-version/checkpoint.py) runs the same 27 checks against any implementation.
+  A small `sitecustomize` hook ([`ai-version/probe/`](ai-version/probe/)) wraps `requests`, so politeness is
+  **measured from the scraper's real calls** (count, gap between call starts, user-agent, timeout), not read from its
+  comments. For the failure tests it answers three pages *locally*: one fake **503**, one fake **404**, and one real page
+  with its description removed and a decoy `£999.99` placed before the product. By default it also serves every other
+  page from my cache (an offline mirror), so testing an AI version costs the real site nothing.
+- Results: [`results-mine.md`](ai-version/results-mine.md), [`results-ai-v1.md`](ai-version/results-ai-v1.md),
+  [`results-ai-v2.md`](ai-version/results-ai-v2.md), plus the first live runs (`*-live.md`)
+
+### Prompt (v1)
+
+```text
+Write a polite web scraper in Python (requests + BeautifulSoup + Pydantic) for https://books.toscrape.com/, a practice
+sandbox.
+
+- Scope: only the first 3 catalogue pages (start at https://books.toscrape.com/catalogue/page-1.html and follow the
+  "next" link), then visit every book page they list: 60 books.
+- For each book, extract: title, product_url (absolute), price_text (e.g. "£51.77"), availability_text,
+  rating_text (One..Five), description (null if missing), source_page (the catalogue page it was found on),
+  fetched_at (ISO timestamp).
+- Normalize price_text to a number price_gbp. Validate every record with a Pydantic model before storing it;
+  records that fail go to output/errors.json with the reason.
+- Write the valid records to output/books.json. Running the scraper twice must still give 60 records, no duplicates.
+- Be polite: send a user-agent that identifies the scraper, use a timeout, wait at least 0.5 s between requests,
+  only accept status 200, and cache every page to a cache/ folder so re-runs don't hit the site again.
+- One broken page must not crash the run: log it and skip it. Retry once on timeouts and 5xx errors, never on 404/403.
+- At the end write output/run-report.json with start time, duration, pages fetched, cache hits, valid records,
+  invalid records and failed pages.
+- Entry point: python src/main.py
+```
+
+### Checkpoint results
+
+| Check | Mine | AI v1 | AI v2 |
+|---|---|---|---|
+| Fresh run finishes; exactly 63 requests | ✅ | ✅ | ✅ |
+| **≥ 0.5 s between requests (measured)** | ✅ min 0.74 s | ❌ **min 0.499 s** (median 0.50) | ✅ min 0.74 s |
+| Identifying user-agent | ✅ name + repo link | ⚠️ `PoliteBooksScraper/1.0 (educational scraper…; python-requests)`, **no contact** | ✅ name + repo link |
+| Timeout on every request | ✅ 10 s | ✅ 10 s | ✅ 10 s |
+| 60 records, 60 unique, numeric `price_gbp`, `https` URLs, all 8 raw fields | ✅ | ✅ | ✅ |
+| Rerun: 0 requests, still 60 | ✅ | ✅ | ✅ |
+| 503 → retried, skipped · 404 → 1 call, skipped · run finishes | ✅ (3 calls, backoff) | ✅ (2 calls, no pause) | ✅ (2 calls, 1.5 s pause) |
+| Other 58 records survive; `failed_pages = 2` | ✅ | ✅ | ✅ |
+| No description → `null`; decoy price ignored | ✅ | ✅ | ✅ |
+| **Score (offline mirror)** | **27/27** | **26/27** | **27/27** |
+| My malformed fixture (an error page with a price on it) | `ParseError` → failed page | **parsed as a book**: "Something went wrong", £1.00 | `ParseError` → failed page |
+| Code (non-blank lines) | 452 (incl. CSV, change detection, dashboard) | 309 | 432 |
+
+The first **live** run of v1 also showed three failures in Run C. **Those were a bug in my harness, not in v1**: it built the
+doctored page from v1's cache file, which is JSON, not HTML. I proved it by replaying Run C offline, fixed the harness
+to always use canonical HTML, and re-ran. The live file keeps a note saying so.
+
+### 1. What did the AI do better, and do I understand that code?
+
+- **A cross-check I didn't write.** v1's model has a `model_validator` that re-parses `price_text` and rejects the record if
+  `price_gbp` doesn't match it. If someone later "fixes" the normalizer and breaks it, the schema catches it. Mine trusts
+  `normalize()`. I understand it, and it's a good idea: validate the *relationship* between fields, not just each field.
+- **Atomic cache writes.** v1 writes each cache entry to a `.tmp` file and renames it, and stores the HTML and its
+  `fetched_at` in one JSON file. A crash mid-write can't leave a half page in its cache. Mine writes outputs atomically
+  but not the cache, so a killed run could leave a truncated HTML file that later reads as a "cache hit".
+- **Real logging.** It used the `logging` module with levels (`INFO Fetching`, `WARNING Attempt 1/2`, `ERROR Skipping`)
+  where I use prints plus a JSON log file.
+- v2 also refused redirects (`allow_redirects=False`), so a 3xx counts as a failure rather than silently following
+  somewhere off-scope. I hadn't thought of that.
+
+### 2. What did it get wrong or silently skip?
+
+- **It treated the minimum as the target.** `MIN_DELAY = 0.5` and a sleep of exactly the remainder means timer and
+  clock jitter put some measured gaps at **0.499 s**, under the floor the assignment set. My 0.75 s has margin.
+- **It silently parsed the wrong thing.** `main = soup.select_one("div.product_main") or soup`: when the product area is
+  missing, it falls back to the *whole document*. My malformed fixture (an error page with a price on it) came back as a
+  book called "Something went wrong" costing £1.00. It was only kept out of `books.json` because availability happened
+  to be missing too. That's exactly the "first thing that looks like a price" bug the assignment warns about, just
+  hidden one level deeper.
+- **It guesses URLs.** If a catalogue page fails, v1 builds the next one with `START_URL.replace("page-1", f"page-{n+1}")`.
+  The assignment says to let the site tell you where the pages are.
+- **An anonymous user-agent.** It said what it was but gave no way to contact anyone, and it still mentioned `python-requests`.
+- **No pause before the retry.** It retried a 503 after only the normal 0.5 s, which is not much of a "wait a moment".
+
+### 3. What did my prompt forget to say?
+
+- "Identify yourself" without **"include a contact link"**, and "at least 0.5 s" without **"leave a margin"**: it did
+  exactly what I wrote.
+- I said "follow the next link" but not **"never construct URLs"**, so the fallback guess was fair game.
+- I asked for `description: null if missing` but never said **what to do when the product area itself is missing**,
+  so it chose "parse the whole page" over "fail the page".
+- I didn't say how long to wait before the retry, or that a cache hit must keep the *original* `fetched_at`. (v1 got
+  the second one right on its own.)
+
+### Rematch (v2)
+
+[`PROMPT-v2.md`](ai-version/PROMPT-v2.md) added: a user-agent with a contact URL, 0.75 s "because 0.5 is a floor, not
+a target", never construct URLs, scope every selector and fail the page if the product area is missing, wait 1–2 s
+before the retry, and keep the original `fetched_at` on a cache hit. **v2 passed 27/27**, turned the malformed page into a
+`ParseError`, and added the redirect refusal on its own.
+
+**Lesson:** v1 looked finished. It ran first time, collected 60 books and survived a 404. Its two real flaws (a delay
+with no margin, and a parser that quietly reads the wrong part of a broken page) only showed up because I measured the
+gap between requests instead of trusting `MIN_DELAY = 0.5`, and because I'd already written a malformed-page fixture
+for my own parser. Building it myself is what told me where to look. And the one time my harness disagreed with the
+AI, the bug was mine: checking the checker is part of the job.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 ## 🗂️ Repository structure <a name="structure"></a>
 
 | Path | Purpose |
@@ -325,6 +437,7 @@ shop would need its terms read first, and quite possibly a different answer.
 | `output/` | Sample output from a clean run: `books.json`, `errors.json`, `run-report.json`, `books.csv`, `dashboard.html`, `fetch-log.jsonl` |
 | `tests/` | 29 offline tests + HTML fixtures |
 | `extras/browser_cost.py` | Stretch: plain HTTP vs real browser on `quotes.toscrape.com/js` (optional deps) |
+| `ai-version/` | Bonus: both AI versions, both prompts, the 27-check harness + `requests` probe, all results |
 | `docs/` | Animated banner (`make_banner.py` → `banner.svg`) and the dashboard screenshot |
 | `cache/` | Raw HTML cache: created by the first run, **git-ignored** |
 
