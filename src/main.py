@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+import extras
 from fetch import MIN_DELAY_S, TIMEOUT_S, USER_AGENT, Fetcher, FetchError
 from parse import ParseError, parse_book, parse_catalogue
 from store import store, validate, write_json
@@ -67,14 +68,21 @@ def unique(found: list[tuple[str, str]]) -> list[tuple[str, str]]:
 
 def main() -> int:
     started_at, t0 = now(), time.monotonic()
-    fetcher = Fetcher(ROOT / "cache", refresh="--refresh" in sys.argv)
+    out = ROOT / "output"
+    out.mkdir(exist_ok=True)
+    (out / "fetch-log.jsonl").write_text("", encoding="utf-8")  # structured log of this run's network attempts
+    fetcher = Fetcher(ROOT / "cache", refresh="--refresh" in sys.argv, log_path=out / "fetch-log.jsonl")
     failed: list[dict] = []
 
     pages, found = discover(fetcher, failed)
     books = unique(found)
+    unique_count = len(books)
+    injected = []
     if "--with-broken-url" in sys.argv:
+        injected = [BROKEN_URL]
         books.append((BROKEN_URL, START_URL))
-    print(f"catalogue_pages={pages}, discovered={len(found)}, unique_urls={len(books)}")
+    print(f"catalogue_pages={pages}, discovered={len(found)}, unique_urls={unique_count}"
+          + (f" (+{len(injected)} made-up URL for the failure test)" if injected else ""))
 
     raw = []
     for url, source_page in books:  # each page on its own: one bad page is logged and skipped
@@ -89,7 +97,9 @@ def main() -> int:
             failed.append({"url": url, "stage": "parse", "reason": str(e)})
 
     good, bad = validate(raw)
-    store(ROOT / "output", good, bad)
+    previous = extras.load_previous(out / "books.json")  # read before overwriting, for change detection
+    store(out, good, bad)
+    diff = extras.changes(previous, [b.model_dump(mode="json") for b in good])
 
     report = {
         "started_at": started_at,
@@ -97,7 +107,8 @@ def main() -> int:
         "duration_s": round(time.monotonic() - t0, 2),
         "catalogue_pages": pages,
         "book_urls_discovered": len(found),
-        "book_urls_unique": len(books),
+        "book_urls_unique": unique_count,
+        "injected_test_urls": injected,
         "detail_pages_parsed": len(raw),
         "pages_fetched": fetcher.stats["pages_fetched"],
         "network_requests": fetcher.stats["network_requests"],
@@ -107,12 +118,19 @@ def main() -> int:
         "invalid_records": len(bad),
         "failed_pages": len(failed),
         "failures": failed,
+        "changes_since_last_run": {"first_run": diff["first_run"], "new": len(diff["new"]),
+                                   "changed": len(diff["changed"]), "unchanged": diff["unchanged"],
+                                   "gone": len(diff["gone"]), "changed_urls": diff["changed"], "gone_urls": diff["gone"]},
         "politeness": {"user_agent": USER_AGENT, "min_delay_s": MIN_DELAY_S, "timeout_s": TIMEOUT_S},
     }
-    write_json(ROOT / "output" / "run-report.json", report)
+    write_json(out / "run-report.json", report)
+    extras.write_csv(out / "books.csv", good)
+    extras.write_dashboard(out / "dashboard.html", good, report)
     print(f"valid_records={len(good)}, invalid_records={len(bad)}, failed_pages={len(failed)}, "
           f"network_requests={report['network_requests']}, cache_hits={report['cache_hits']}, "
           f"duration_s={report['duration_s']}")
+    c = report["changes_since_last_run"]
+    print(f"changes: new={c['new']}, changed={c['changed']}, unchanged={c['unchanged']}, gone={c['gone']}")
     return 0
 
 
