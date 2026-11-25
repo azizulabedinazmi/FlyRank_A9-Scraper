@@ -1,0 +1,15 @@
+{
+  "url": "https://quotes.toscrape.com/js/",
+  "plain_http": {
+    "seconds": 1.4,
+    "extra_memory_mb": 5.9,
+    "quotes_found": 0,
+    "status": 200,
+    "html_bytes": 5808
+  },
+  "browser": {
+    "seconds": 6.55,
+    "extra_memory_mb": 586.6,
+    "quotes_found": 10
+  }
+}
